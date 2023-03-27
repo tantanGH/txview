@@ -26,6 +26,8 @@ A simple text viewer for X680x0/Human68k
 
 TXVIWxxx.ZIP をダウンロードして展開し、TXVIEW.X をパスの通ったディレクトリに置きます。
 
+開発・動作確認は X68030 (25MHz) と 060turbo (50MHz) で行っています。低クロック機では恐らくもたつきなどが出ると思います。
+
 ---
 
 ### 使用方法
