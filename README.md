@@ -14,7 +14,7 @@ A simple text viewer for X680x0/Human68k
 
 しかしながら自分の環境(060turbo or エミュレータ)では高速性よりもPCM8PP.Xを停止されてしまうことのデメリットの方が大きいので、あまりカツカツに無理せず、割り込みも使わずせいぜいVSYNCを見ながらIOCSコールでラスタコピーする程度のしょぼい実装のものを自作しました。スムーススクロールを行ってもPCM8PP.Xには影響ありません。また、最下段はS44BGP.Xの歌詞表示のために空けてありますw
 
-<img src='images/txview_demo1.png'/>
+<img src='images/txview_images1.gif'/>
 
 ---
 
