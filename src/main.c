@@ -13,7 +13,6 @@
 
 #include "keyboard.h"
 #include "fpcall.h"
-#include "kanji.h"
 #include "txview.h"
 
 //
@@ -23,25 +22,46 @@ static void show_help_message() {
   printf("TXVIEW.X - A simple text viewer for X680x0 " VERSION " by tantan\n");
   printf("usage: txview [options] <text-file>\n");
   printf("options:\n");
+  printf("     -g ... show 512x512 graphic screen\n");
   printf("     -s ... slow smooth scroll\n");
   printf("     -h ... show version and help message\n");
-  printf("\n");
-  printf("key bindings:\n");
-  printf("  ESC/Q       ... quit viwer\n");
-  printf("  LEFT/RIGHT  ... scroll (normal)\n");
-  printf("  UP/DOWN     ... scroll (fast)\n");
-  printf("  ROLLUP/DOWN ... page up/down\n");
-  printf("  HOME/UNDO   ... jump to top/end\n");
 }
 
 //
-//  search prompt
+//  utility function to check SJIS character byte
+//
+//   0 ... not sjis char
+//   1 ... sjis 1st char
+//   2 ... sjis 2nd char
+//
+static inline int32_t kanji_check_sjis(const uint8_t* str, int16_t pos) {
+
+  // need to scan from the beginning of the string
+  int16_t ofs = 0;
+  int16_t sjis = 0;
+  while (ofs <= pos) {
+    uint8_t c = str[ ofs++ ];
+    if (c == 0) {
+      break;
+    } else if (sjis == 1) {
+      sjis = 2;
+    } else if ((c >= 0x81 && c <= 0x9f) || (c >= 0xe0 && c <= 0xef)) {
+      sjis = 1;
+    } else {
+      sjis = 0;
+    }
+  }
+  return sjis;
+}
+
+//
+//  search keyword prompt
 //
 static int32_t search_prompt(uint8_t* search_word) {
 
   int32_t rc = -1;
 
-  _iocs_b_consol(768-8*26, 0, 19, 0);
+  _iocs_b_consol(768 - 8 * 26, 0, SEARCH_MAX_LEN - 1, 0);
   _iocs_os_curon();
 
   _iocs_b_locate(0, 0);
@@ -53,20 +73,17 @@ static int32_t search_prompt(uint8_t* search_word) {
 
     int16_t char_code = _dos_k_keyinp();
 
-    if (char_code == 13) {
-      // CR
+    if (char_code == 13) {            // CR
       _iocs_os_curof();  
       fpcall_set_fp_mode(0);
       rc = 0;
       break;
-    } else if (char_code == 27) {
-      // ESC
+    } else if (char_code == 27) {     // ESC
       _iocs_os_curof();
       fpcall_set_fp_mode(0);
       rc = -1;
       break;
-    } else if (char_code == 8) {
-      // BS
+    } else if (char_code == 8) {      // BS
       int16_t x = _iocs_b_locate(-1,-1) >> 16;
       if (x == (SEARCH_MAX_LEN - 1) && strlen(search_word) == SEARCH_MAX_LEN) x++;    // for line end special case
       int16_t cur_ofs = x;
@@ -82,8 +99,7 @@ static int32_t search_prompt(uint8_t* search_word) {
       _iocs_b_print(search_word);
       _iocs_b_era_ed();
       _iocs_b_locate(cur_ofs, 0);
-    } else if (char_code == 7) {
-      // DEL
+    } else if (char_code == 7) {      // DEL
       int16_t x = _iocs_b_locate(-1,-1) >> 16;
       if (kanji_check_sjis(search_word, x) == 1) {
         memmove(search_word + x, search_word + x + 2, strlen(search_word) - x);
@@ -95,16 +111,14 @@ static int32_t search_prompt(uint8_t* search_word) {
       _iocs_b_print(search_word);
       _iocs_b_era_ed();
       _iocs_b_locate(x, 0);
-    } else if (char_code == 19) {
-      // LEFT
+    } else if (char_code == 19) {     // LEFT
       int16_t x = _iocs_b_locate(-1,-1) >> 16;
       if (x > 1 && kanji_check_sjis(search_word, x - 2) == 1) {
         _iocs_b_left(2);
       } else if (x > 0) {
         _iocs_b_left(1);
       }
-    } else if (char_code == 4) {
-      // RIGHT
+    } else if (char_code == 4) {      // RIGHT
       int16_t x = _iocs_b_locate(-1,-1) >> 16;
       if (kanji_check_sjis(search_word, x) == 1) {
         if (x < (SEARCH_MAX_LEN - 1) && x < strlen(search_word) - 1) {
@@ -116,20 +130,17 @@ static int32_t search_prompt(uint8_t* search_word) {
         }
       }
     } else if ((char_code >= 0x20 && char_code <= 0x7f && char_code != 0x22) ||
-               (char_code >= 0xa1 && char_code <= 0xdf)) {
-      // hankaku codes
+               (char_code >= 0xa1 && char_code <= 0xdf)) {      // hankaku codes
       int16_t x = _iocs_b_locate(-1,-1) >> 16;
       int16_t cur_ofs = x;
       int16_t len = strlen(search_word);
-      if (_iocs_b_sftsns() & 0x1000) {
-        // INS mode
+      if (_iocs_b_sftsns() & 0x1000) {    // INS mode
         if (len < (SEARCH_MAX_LEN - 1)) {
           memmove(search_word + x + 1, search_word + x, len - x + 1);
           search_word[x] = char_code;
           cur_ofs++;
         }
-      } else {
-        // not INS mode
+      } else {                            // overwrite mode
         if (x < (SEARCH_MAX_LEN - 0)) {
           if (search_word[x] == '\0') {
             search_word[x+1] = '\0';
@@ -148,22 +159,19 @@ static int32_t search_prompt(uint8_t* search_word) {
       _iocs_b_era_ed();
       _iocs_b_locate(cur_ofs, 0);
     } else if ((char_code >= 0x81 && char_code <= 0x9f) ||
-               (char_code >= 0xe0 && char_code <= 0xef)) {
-      // shift-jis zenkaku 1st codes
+               (char_code >= 0xe0 && char_code <= 0xef)) {      // shift-jis 1st codes
       int16_t x = _iocs_b_locate(-1,-1) >> 16;
       int16_t cur_ofs = x;
       int16_t len = strlen(search_word); 
-      int16_t char_code2 = _dos_k_keyinp();    // shift-jis 2nd code
-      if (_iocs_b_sftsns() & 0x1000) {
-        // INS mode
+      int16_t char_code2 = _dos_k_keyinp();     // shift-jis 2nd code
+      if (_iocs_b_sftsns() & 0x1000) {          // INS mode
         if (len < (SEARCH_MAX_LEN - 2)) {
           memmove(search_word + x + 2, search_word + x, len - x + 1);
           search_word[x] = char_code;
           search_word[x+1] = char_code2;
           cur_ofs += 2;
         }
-      } else {
-        // not INS mode
+      } else {                                  // overwrite mode
         if (x < (SEARCH_MAX_LEN - 1)) {
           if (search_word[x] == '\0') {
             search_word[x+2] = '\0';
@@ -274,6 +282,9 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   // scroll speed   (1:normal 0:slow)
   int16_t scroll_speed = 1;
 
+  // show 512x512x65536 graphic
+  int16_t show_graphic = 0;
+
   // source file name
   uint8_t* file_name = NULL;
 
@@ -314,6 +325,8 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
       if (argv[i][1] == 'h') {
         show_help_message();
         goto exit;
+      } else if (argv[i][1] == 'g') {
+        show_graphic = 1;
       } else if (argv[i][1] == 's') {
         scroll_speed = 0;
       } else {
@@ -451,6 +464,11 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
 
   // init screen mode
   _iocs_crtmod(16);
+
+  // show 512x512x65536 graphic
+  if (show_graphic) {
+    _iocs_b_wpoke((uint16_t*)0xE82600, 0x002f);
+  }
 
   // text palette
   _iocs_tpalet(1, TEXT_COLOR1);

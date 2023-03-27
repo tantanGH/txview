@@ -23,6 +23,8 @@
 #define _iocs_tpalet      TPALET
 #define _iocs_os_curon    OS_CURON
 #define _iocs_os_curof    OS_CUROF
+#define _iocs_g_clr_on    G_CLR_ON
+#define _iocs_b_wpoke     B_WPOKE
 
 #define _dos_c_fnkmod     C_FNKMOD
 #define _dos_c_cls_al     C_CLS_AL
