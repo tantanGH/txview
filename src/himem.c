@@ -4,6 +4,18 @@
 #include <x68k/dos.h>
 #include "himem.h"
 
+#ifdef XDEV68K
+
+#define iocs_regs       REGS
+#define _iocs_trap15    TRAP15
+
+#define _dos_malloc     MALLOC
+#define _dos_mfree      MFREE
+#define _dos_setblock   SETBLOCK
+#define _dos_intvcs     INTVCS
+
+#endif
+
 //
 //  allocate high memory
 //

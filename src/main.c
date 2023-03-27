@@ -2,15 +2,50 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef XDEV68K
+#include <iocslib.h>
+#include <doslib.h>
+#else
 #include <x68k/iocs.h>
 #include <x68k/dos.h>
+#endif
+
 #include "himem.h"
 #include "keyboard.h"
 
+#ifdef XDEV68K
+#define _iocs_b_bpeek     B_BPEEK
+#define _iocs_b_consol    B_CONSOL
+#define _iocs_b_clr_ed    B_CLR_ED
+#define _iocs_b_locate    B_LOCATE
+#define _iocs_b_color     B_COLOR
+#define _iocs_b_print     B_PRINT
+#define _iocs_b_era_ed    B_ERA_ED
+#define _iocs_b_putmes    B_PUTMES
+#define _iocs_b_keysns    B_KEYSNS
+#define _iocs_b_keyinp    B_KEYINP
+#define _iocs_b_sftsns    B_SFTSNS
+#define _iocs_bitsns      BITSNS
+#define _iocs_crtmod      CRTMOD
+#define _iocs_txrascpy    TXRASCPY
+
+#define _dos_c_fnkmod     C_CNKMOD
+#define _dos_c_cls_al     C_CLS_AL
+#define _dos_c_curoff     C_CUROFF
+#define _dos_c_curon      C_CURON
+#endif
+
 #define VERSION "0.1.0 (2023/03/27)"
 
-#define CONSOLE_WIDTH  (96)
-#define CONSOLE_HEIGHT (31)
+#define CONSOLE_WIDTH  (90)
+#define CONSOLE_HEIGHT (30)
+
+#define MAX_LINES (99999)
+#define OVERFLOW_MARGIN (4096)
+
+#define WAIT_VSYNC   while(!(_iocs_b_bpeek((uint8_t*)0xE88001) & 0x10))
+#define WAIT_VBLANK  while( (_iocs_b_bpeek((uint8_t*)0xE88001) & 0x10))
 
 //
 //  show help message
@@ -33,15 +68,24 @@ static void show_help_message() {
 //
 //  full refresh
 //
-static void refresh(uint8_t** line_ptrs, int32_t num_lines, int32_t line_ofs) {
-  _iocs_b_color(3);
+static void refresh(uint8_t** line_ptrs, uint16_t* line_labels, int32_t num_lines, int32_t line_ofs) {
+
+  static uint8_t line_header[7];
+  line_header[6] = '\0';
+
+  WAIT_VSYNC;
+  WAIT_VBLANK;
+
   for (int16_t i = 0; i < CONSOLE_HEIGHT; i++) {
     if (line_ofs + i >= num_lines) {
       _iocs_b_clr_ed();
       break;
     }
+    sprintf(line_header, "%5d|", line_labels[ line_ofs + i ]);
     _iocs_b_locate(0, i);
     _iocs_b_era_al();
+    _iocs_b_putmes(1, 0, 1 + i, 5, line_header);
+    _iocs_b_color(3);
     _iocs_b_print(line_ptrs[ line_ofs + i ]);
   }
 }
@@ -68,6 +112,9 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
 
   // line pointers
   uint8_t** line_ptrs = NULL;
+
+  // line number label pointers
+  uint16_t* line_labels = NULL;
 
   // number of total lines
   int32_t num_lines = 0;
@@ -107,6 +154,13 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
     goto exit;
   }
 
+  // line label buffers
+  line_labels = (uint16_t*)himem_malloc(sizeof(uint16_t) * MAX_LINES, 0);
+  if (line_labels == NULL) {
+    printf("error: out of memory.\n");
+    goto exit;    
+  }
+
   // read text file data into memory buffer as binary
   fp = fopen(file_name, "rb");
   if (fp == NULL) {
@@ -119,8 +173,8 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   size_t file_size = ftell(fp);
   fseek(fp, 0, SEEK_SET);
 
-  // allocate buffer
-  file_data = (uint8_t*)himem_malloc(file_size + 1, 0);     // plus 1 byte for last line feed
+  // allocate buffer with some margin for line wraps
+  file_data = (uint8_t*)himem_malloc(file_size + OVERFLOW_MARGIN, 0);
   if (file_data == NULL) {
     printf("error: out of memory.\n");
     goto exit;
@@ -139,16 +193,43 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   // add LF if last line does not have it
   if (file_data[file_size - 1] != '\n' && file_data[file_size - 1] != '\x1a') {
     file_data[file_size] = '\n';
+  } else {
+    file_data[file_size] = '\0';
   }
 
-  // count lines 
-  for (size_t ofs = 0; ofs <= file_size; ofs++) {
+  // preprocess lines
+  size_t data_size = file_size + 1;
+  uint8_t* line_start = file_data;
+  uint16_t line_label = 1;
+  int32_t num_wraps = 0;
+  size_t ofs = 0;
+  do {
     uint8_t c = file_data[ofs];
     if (c == '\n' || c == '\x1a') {
       file_data[ofs] = '\0';
+      while (strlen(line_start) > CONSOLE_WIDTH) {
+        memmove(line_start + CONSOLE_WIDTH + 1, line_start + CONSOLE_WIDTH, file_data + data_size - (line_start + CONSOLE_WIDTH));
+        ofs++;
+        data_size++;
+        line_start[CONSOLE_WIDTH] = '\0';
+        line_labels[num_lines] = line_label;
+        num_lines++;
+        //printf("%d,%d,%d,%d\n",num_lines,strlen(line_start),ofs,data_size);
+        line_start += CONSOLE_WIDTH + 1;
+        if (++num_wraps >= OVERFLOW_MARGIN) {
+          printf("error: too many line wraps.\n");
+          goto exit;
+        }
+      }
+      line_labels[num_lines] = line_label;
       num_lines++;
+      if (num_lines == MAX_LINES) break;
+      //printf("%d,%d,%d,%d\n",num_lines,strlen(line_start),ofs,data_size);
+      line_start = file_data + ofs + 1;
+      line_label++;
     }
-  }
+    ofs++;
+  } while (ofs < data_size);
 
   // line pointer buffers
   line_ptrs = (uint8_t**)himem_malloc(sizeof(uint8_t*) * num_lines, 0);
@@ -161,9 +242,6 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   line_ptrs[0] = file_data;
   for (int32_t i = 1; i < num_lines; i++) {
     line_ptrs[i] = line_ptrs[ i - 1 ] + strlen(line_ptrs[ i - 1 ]) + 1;
-    if (*(line_ptrs[i] - 2) == '\r') {
-      *(line_ptrs[i] - 2) = '\0';
-    }
   }
 
   // init screen mode
@@ -174,9 +252,18 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   _dos_c_cls_al();
   _dos_c_curoff();
 
+  // console area
+  _iocs_b_consol(16*3, 4*4, CONSOLE_WIDTH - 1, CONSOLE_HEIGHT - 1);
+
+  // header line
+  _iocs_b_putmes(1, 0, 0, 96, " LINE+---------+---------+---------+---------+---------+---------+---------+---------+---------+");
+
   // current top line number
   int32_t line_ofs = 0;
-  refresh(line_ptrs, num_lines, line_ofs);
+  refresh(line_ptrs, line_labels, num_lines, line_ofs);
+
+  static uint8_t line_header[7];
+  line_header[6] = '\0';
 
   // main loop
   for (;;) {
@@ -187,67 +274,81 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
     if (sense_code7 & KEY_SNS_LEFT) {
       // LEFT
       if (line_ofs > 0) {
-        while(!(_iocs_b_bpeek((uint8_t*)0xE88001) & 0x10));
+        WAIT_VSYNC;
         if (scroll_speed == 0) {
           for (int16_t i = 0; i < 4; i++) {
-            while((_iocs_b_bpeek((uint8_t*)0xE88001) & 0x10));
+            WAIT_VBLANK;
             _iocs_txrascpy(122 * 256 + 123, CONSOLE_HEIGHT * 16 / 4 - 1, 3 + 0x8000);
           }
         } else {
           for (int16_t i = 0; i < 2; i++) {
-            while((_iocs_b_bpeek((uint8_t*)0xE88001) & 0x10));
+            WAIT_VBLANK;
             _iocs_txrascpy(121 * 256 + 123, CONSOLE_HEIGHT * 16 / 4 - 2, 3 + 0x8000);
           }          
         }
         line_ofs--;
+        sprintf(line_header, "%5d|", line_labels[ line_ofs ]);
         _iocs_b_locate(0, 0);
-        _iocs_b_era_al();
+        _iocs_b_era_ed();
+        _iocs_b_putmes(1, 0, 1, 5, line_header);
+        _iocs_b_color(3);
         _iocs_b_print(line_ptrs[ line_ofs ]);
+
       }
     } else if (sense_code7 & KEY_SNS_RIGHT) {
       // RIGHT
-      if (num_lines >= line_ofs + CONSOLE_HEIGHT) {
+      if (num_lines > line_ofs + CONSOLE_HEIGHT) {
         while(!(_iocs_b_bpeek((uint8_t*)0xE88001) & 0x10));
         if (scroll_speed == 0) {
           for (int16_t i = 0; i < 4; i++) {
-            while((_iocs_b_bpeek((uint8_t*)0xE88001) & 0x10));
-            _iocs_txrascpy(1 * 256 + 0, CONSOLE_HEIGHT * 16 / 4 - 1, 3 + 0x0000);
+            WAIT_VBLANK;
+            _iocs_txrascpy(5 * 256 + 4, CONSOLE_HEIGHT * 16 / 4 - 1, 3 + 0x0000);
           }
         } else {
           for (int16_t i = 0; i < 2; i++) {
-            while((_iocs_b_bpeek((uint8_t*)0xE88001) & 0x10));
-            _iocs_txrascpy(2 * 256 + 0, CONSOLE_HEIGHT * 16 / 4 - 2, 3 + 0x0000);
+            WAIT_VBLANK;
+            _iocs_txrascpy(6 * 256 + 4, CONSOLE_HEIGHT * 16 / 4 - 2, 3 + 0x0000);
           }          
         }
         line_ofs++;
+        sprintf(line_header, "%5d|", line_labels[ line_ofs + CONSOLE_HEIGHT - 1 ]);
         _iocs_b_locate(0, CONSOLE_HEIGHT - 1);
         _iocs_b_era_al();
+        _iocs_b_putmes(1, 0, 1 + CONSOLE_HEIGHT - 1, 5, line_header);
+        _iocs_b_color(3);
         _iocs_b_print(line_ptrs[ line_ofs + CONSOLE_HEIGHT - 1 ]);
+
       }
     } else if (sense_code7 & KEY_SNS_UP || sense_code4 & KEY_SNS_K) {
       // UP, k
       if (line_ofs > 0) {
-        while(!(_iocs_b_bpeek((uint8_t*)0xE88001) & 0x10));
+        WAIT_VSYNC;
         for (int16_t i = 0; i < 1; i++) {
-          while((_iocs_b_bpeek((uint8_t*)0xE88001) & 0x10));
+          WAIT_VBLANK;
           _iocs_txrascpy(119 * 256 + 123, CONSOLE_HEIGHT * 16 / 4 - 4, 3 + 0x8000);
         }
         line_ofs--;
+        sprintf(line_header, "%5d|", line_labels[ line_ofs ]);
         _iocs_b_locate(0, 0);
-        _iocs_b_era_al();
+        _iocs_b_era_ed();
+        _iocs_b_putmes(1, 0, 1, 5, line_header);
+        _iocs_b_color(3);
         _iocs_b_print(line_ptrs[ line_ofs ]);
       }
     } else if (sense_code7 == KEY_SNS_DOWN || sense_code4 & KEY_SNS_J) {
       // DOWN, j
       if (num_lines > line_ofs + CONSOLE_HEIGHT) {
-        while(!(_iocs_b_bpeek((uint8_t*)0xE88001) & 0x10));
+        WAIT_VSYNC;
         for (int16_t i = 0; i < 1; i++) {
-          while((_iocs_b_bpeek((uint8_t*)0xE88001) & 0x10));
-          _iocs_txrascpy(4 * 256 + 0, CONSOLE_HEIGHT * 16 / 4 - 4, 3 + 0x0000);
+          WAIT_VBLANK;
+          _iocs_txrascpy(8 * 256 + 4, CONSOLE_HEIGHT * 16 / 4 - 4, 3 + 0x0000);
         }
         line_ofs++;
+        sprintf(line_header, "%4d|", line_labels[ line_ofs + CONSOLE_HEIGHT - 1 ]);
         _iocs_b_locate(0, CONSOLE_HEIGHT - 1);
         _iocs_b_era_al();
+        _iocs_b_putmes(1, 0, 1 + CONSOLE_HEIGHT - 1, 5, line_header);
+        _iocs_b_color(3);
         _iocs_b_print(line_ptrs[ line_ofs + CONSOLE_HEIGHT - 1 ]);
       }
     }
@@ -271,23 +372,23 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
       } else if (scan_code == KEY_SCAN_CODE_HOME || scan_code == KEY_SCAN_CODE_SHIFT_COMMA) {
         // HOME, <
         line_ofs = 0;
-        refresh(line_ptrs, num_lines, line_ofs);
+        refresh(line_ptrs, line_labels, num_lines, line_ofs);
       } else if (scan_code == KEY_SCAN_CODE_UNDO || scan_code == KEY_SCAN_CODE_SHIFT_PERIOD) {
         // UNDO, >
         line_ofs = num_lines - CONSOLE_HEIGHT;
         if (line_ofs < 0) line_ofs = 0;
-        refresh(line_ptrs, num_lines, line_ofs);
+        refresh(line_ptrs, line_labels, num_lines, line_ofs);
       } else if (scan_code == KEY_SCAN_CODE_ROLLDOWN || scan_code == KEY_SCAN_CODE_B) {
         // ROLLDOWN, b
         line_ofs -= CONSOLE_HEIGHT;
         if (line_ofs < 0) line_ofs = 0;
-        refresh(line_ptrs, num_lines, line_ofs);
+        refresh(line_ptrs, line_labels, num_lines, line_ofs);
       } else if (scan_code == KEY_SCAN_CODE_ROLLUP || scan_code == KEY_SCAN_CODE_SPACE) {
         // ROLLUP, SPACE
         line_ofs += CONSOLE_HEIGHT;
         if (line_ofs > num_lines - CONSOLE_HEIGHT) line_ofs = num_lines - CONSOLE_HEIGHT;
         if (line_ofs < 0) line_ofs = 0;
-        refresh(line_ptrs, num_lines, line_ofs);
+        refresh(line_ptrs, line_labels, num_lines, line_ofs);
       }
 
     }
@@ -295,6 +396,8 @@ int32_t main(int32_t argc, uint8_t* argv[]) {
   }
 
 catch:
+
+  _iocs_b_consol(0, 0, 95, 30);
 
   _dos_c_curon();
   _dos_c_cls_al();
@@ -305,6 +408,11 @@ exit:
   if (fp != NULL) {
     fclose(fp);
     fp = NULL;
+  }
+
+  if (line_labels != NULL) {
+    himem_free(line_labels, 0);
+    line_labels = NULL;
   }
 
   if (line_ptrs != NULL) {
