@@ -101,7 +101,7 @@ TXVIEW.Xを終了します。
 後方検索を行います。画面右上に検索ワード入力用プロンプトが出ます。
 <br/>
 
-<img src='images/txview_demo1.gif'/>
+<img src='images/txview_demo1a.gif'/>
 
 ---
 
